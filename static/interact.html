@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="content-type" content="text/html; charset=UTF-8">
+ 
+    <title>Multilingual Online Spelling Correction</title>
+    <link rel="stylesheet" href="interact.css">
+    <!-- <script src="static/jquery.min.js"> -->
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js">
+    </script>
+
+    <script>
+        var global = this; // in global scope.
+        var latestToken = "";
+    	var endOfToken = false;
+        var inToken = false;
+        var currentContextPoolSize = 200;
+        var currentToken = "";
+        var currentTokenIndex = 0;
+        var currentTokenDecision = "correct";
+        var resultFromModel = {'result': 'undefined'};
+        var tokenArray = new Array();
+        var tokenNum = 0;
+        var whiteSpaceNum = 0;
+        var tokenMisspelledIndex = new Array();
+        var splitter = [" ", "\n", "\r", "'"];
+        var maxTokenDeliverLength = 3000;
+        var start = 0;
+        var max_retrieval_num = 10;
+        // CHANGE Model name 
+        var model = 'CNN'; // triLM/RNN/CNN
+
+        // statistics to collect
+
+        // how many times user flip a misspelling prediction (from correct to misspelled)
+        var correct2misspell = 0;
+
+        // how many times user flip a correct prediction (from misspelled to correct)
+        var misspell2correct = 0;
+
+        // how many times the retrieval list has been used
+        var retrievalClick = 0;
+
+        // how many times the retrieval list has been successfully used
+        var retrievalEffectiveClick = 0;
+
+        // how many times the use needs to maual correct the another
+        var retrievalManualCorrect = 0;
+
+
+        // Browser Compatibility
+        // Opera 8.0+
+        var isOpera = (!!window.opr && !!opr.addons) || !!window.opera || navigator.userAgent.indexOf(' OPR/') >= 0;
+        // Firefox 1.0+
+        var isFirefox = typeof InstallTrigger !== 'undefined';
+        // Safari 3.0+ "[object HTMLElementConstructor]" 
+        var isSafari = /constructor/i.test(window.HTMLElement) || (function (p) { return p.toString() === "[object SafariRemoteNotification]"; })(!window['safari'] || (typeof safari !== 'undefined' && safari.pushNotification));
+        // Internet Explorer 6-11
+        var isIE = /*@cc_on!@*/false || !!document.documentMode;
+        // Edge 20+
+        var isEdge = !isIE && !!window.StyleMedia;
+        // Chrome 1 - 71
+        var isChrome = !!window.chrome && (!!window.chrome.webstore || !!window.chrome.runtime);
+        // Blink engine detection
+        var isBlink = (isChrome || isOpera) && !!window.CSS;
+
+        console.log("Opera: ", isOpera, " Firefox: ", isFirefox,
+                    " Safari: ", isSafari, " Edge: ", isEdge,
+                    "Chrome: ", isChrome, " Blink: ", isBlink);
+        
+        // rgb(40, 179, 190)
+        var decision2colorTag = {'misspelled': "#28B3BE", "correct":"", 'correct-misspell':"#FEB236", 'misspell-correct': "#B5E7A0"}
+        var colorTag2decision = {"#28B3BE": 'misspelled', "":"correct", "#FEB236":'correct-misspell', "#B5E7A0":'misspell-correct'}
+        var modelStatus2color = {"ready": "#D9FF66", "in-use": "navy"};
+
+
+        class tokenSpan extends HTMLSpanElement {
+            constructor() {
+                super();
+            }
+        }
+
+
+        // Support Chrome 66 Firefox 63 Opera 53 Safari 10.1 not support Edge and IE
+        customElements.define('span-token', tokenSpan, { extends: 'span' });
+
+
+        var user = "Joe";
+        var search = window.location.search;
+        var queryStart = search.lastIndexOf("?")
+        if ( queryStart > -1) {
+            var user = search.replace("?user=", "");
+            console.log("user: ", user);
+            window.onload = function() {
+                document.getElementById("user").innerHTML = user;
+            }
+        }
+
+    	function confirmDialog(){
+			if(confirm("Continue？")){
+	    		alert("Continue");
+			}else{
+    			alert("See you later");
+			}
+        }
+        
+    	function promptDialog(){
+    		var name = prompt("Your Name：");
+			alert("Bonjour，" + name);
+        }
+
+        function getWordColorTag(result){
+            if (result.equals("misspelled")){
+                return "green";
+            }
+            return "white";
+        }
+
+        function getCurrentLang(){
+            global.current_lang = document.getElementById("lang_tag").innerText;
+            return global.current_lang;
+        }
+
+        function checkLang() {
+            if (document.getElementById("lang_tag").innerText == "") {
+                alert("Please select a language first");
+                clearInput();
+                return false;
+            }
+            else {
+                return true;
+            }
+        }
+
+        // Convert color notation to dictionary of rgb
+        function componentToHex(c) {
+            var hex = c.toString(16);
+            return hex.length == 1 ? "0" + hex : hex;
+        }
+
+        function rgbToHex(r, g, b) {
+            return "#" + componentToHex(r) + componentToHex(g) + componentToHex(b);
+        }
+
+        function hexToRgb(hex) {
+            var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+
+        function rgbNotatToHex(rgb) {
+            if (rgb == ""){
+                return rgb;
+            }
+            var rgb_value = rgb.replace("rgb(", "").replace(")", "").split(",")
+            var r = eval(rgb_value[0]);
+            var g = eval(rgb_value[1]);
+            var b = eval(rgb_value[2]);
+            return rgbToHex(r, g, b).toUpperCase();
+        }
+
+        // Statistics
+        function addition(id, value) {
+            document.getElementById(id).innerHTML = Math.max(parseInt(document.getElementById(id).innerHTML) + value, 0);
+        }
+
+        function resetStatistics(clearVocab) {
+            document.getElementById("numCorrect").innerHTML = 0;
+            document.getElementById("numCorrectRatio").innerHTML = 0;
+            document.getElementById("numMisspelled").innerHTML = 0;
+            document.getElementById("numMisspelledRatio").innerHTML = 0;
+            document.getElementById("numOOV").innerHTML = 0;
+            document.getElementById("numOOVRatio").innerHTML = 0;
+            document.getElementById("numCorrectMisspell").innerHTML = 0;
+            document.getElementById("numCorrectMisspellRatio").innerHTML = 0;
+            document.getElementById("numMisspellCorrect").innerHTML = 0;
+            document.getElementById("numMisspellCorrectRatio").innerHTML = 0;
+            document.getElementById("num").innerHTML = 0;
+            document.getElementById("accuracy").innerHTML = 0;
+            document.getElementById("precision").innerHTML = 0;
+            document.getElementById("recall").innerHTML = 0;
+            document.getElementById("f1").innerHTML = 0;
+            document.getElementById("result").innerHTML += "";
+
+
+            // reset statistics?
+            // // how many times user flip a misspelling prediction (from correct to misspelled)
+            // var correct2misspell = 0;
+
+            // // how many times user flip a correct prediction (from misspelled to correct)
+            // var misspell2correct = 0;
+
+            // // how many times the retrieval list has been used
+            // var retrievalClick = 0;
+
+            // // how many times the retrieval list has been successfully used
+            // var retrievalEffectiveClick = 0;
+
+            // // how many times the use needs to maual correct the another
+            // var retrievalManualCorrect = 0;
+
+            if (clearVocab) {
+                document.getElementById("numVocabulary").innerHTML = 0;
+            }
+        }
+
+        function getHTTPRequestType(xmlhttp) {
+            if (window.XMLHttpRequest) {// code for IE7+, Firefox, Chrome, Opera, Safari
+                xmlhttp=new XMLHttpRequest();
+            }
+            else {// code for IE6, IE5
+                xmlhttp=new ActiveXObject("Microsoft.XMLHTTP");
+            }
+            return xmlhttp;
+        }
+
+        function clearInput(){
+            document.getElementById("data").value="";
+            document.getElementById("current_context").innerHTML="";
+            global.start = 0;
+        }
+
+        function clearOutput() {
+            $(".token-beforeCorrection").remove(); 
+            $(".space-beforeCorrection").remove(); 
+            document.getElementById("currentToken").innerHTML="";
+            // to ensure that new span tags in demonstrate area starts from 0
+            global.tokenNum = 0;
+        }
+
+        function clearAll() {
+            clearInput();
+            clearOutput();
+            resetStatistics(false);
+        }
+
+        function showDescription() {
+            var currentStatus = document.getElementById("descriptionButton").value;
+            if (currentStatus == "instructions") {
+                document.getElementById("purpose").innerText = 'This is a online spelling normalization for any language\n' +
+                                                                'The instruction goes in following steps\n' + 
+                                                                '    1. Select a langauge from the top botton (or type a new language by selecting Others, switch the language whenever necessary)\n' +
+                                                                '    2. Type in textarea in the language you choose. The misspelled word will be in background in the demo area right below.\n' +
+                                                                '    3. Correct a word by click the corresponding word in the demo area at step 2, then make a suggestion by clicking the misspelled and correct spelled button\n' +
+                                                                '    4. For misspelled words that not identified by the system, use the drop down menu of candidates to select a word retrieved from vocabulary/hypothesized by the system\n'
+                                                                'Click clear Input to clear the text box and reset to clear both the demo area and the text box\n' +
+                                                                'Click hide to hide the instruction, click again to read the instruction again.\n' +
+                                                                'Have Fun!';
+
+                document.getElementById("descriptionButton").value = "hide";
+            }
+            else{
+                document.getElementById("purpose").innerText = "";
+                document.getElementById("descriptionButton").value = "instructions";
+            }
+        }
+
+        function showContact() {
+            var currentStatus = document.getElementById("contactButton").value;
+            if (currentStatus == "contact") {
+                document.getElementById("purpose").innerText = 'For questions and support, please contact yiyuanli@andrew.cmu.edu';
+
+                document.getElementById("contactButton").value = "hide";
+            }
+            else{
+                document.getElementById("purpose").innerText = "";
+                document.getElementById("contactButton").value = "contact";
+            }
+        }
+
+        function getLastToken(last_char) {
+            // Method 1: Append (can't catch up speed)
+            //global.latestToken += last_char;
+
+            // Method 2: Split the whole text
+            var text = document.getElementById("data").value;
+            if (text.lastIndexOf(" ") == -1){
+            	global.latestToken = text;
+            }
+            else {
+                global.latestToken = text.split(" ").slice(-1).toString();
+            }
+        }
+
+        function initCandidateList() {
+            var candidateList = document.getElementById('retrievedTokenList');
+            if (candidateList != null) {
+                candidateList.parentNode.removeChild(candidateList);
+            }
+        }
+
+        function selectToken(tokenSpan) {
+            document.getElementById("currentToken").innerText = tokenSpan.innerText;
+            global.currentToken = tokenSpan.innerText;
+            global.currentTokenIndex = tokenSpan.id.split("_").slice(-1);
+            global.currentTokenDecision = global.colorTag2decision[rgbNotatToHex(tokenSpan.style.backgroundColor)];
+            initCandidateList();
+        }
+
+        function setResultSummary(){
+            var correct = parseInt(document.getElementById("numCorrect").innerHTML);
+            var misspelled = parseInt(document.getElementById("numMisspelled").innerHTML);
+            var total_num = document.getElementById("num").innerHTML = correct + misspelled;
+            document.getElementById("numCorrectRatio").innerHTML = parseFloat(correct * 100 / total_num).toFixed(2);
+            document.getElementById("numMisspelledRatio").innerHTML = parseFloat(misspelled * 100 / total_num).toFixed(2);
+        }
+
+        // user select the token from the retrieved list
+        function retrieveToken(tokenRetrievedSpan) {
+            var tokenRetrieved = tokenRetrievedSpan.innerText;
+            var newData = {'Method': 'retrieveConfirm', 'retrievedToken':tokenRetrieved, 
+                           'originalToken': document.getElementById("currentToken").innerText,
+                           'lang':document.getElementById("lang_tag").innerText,
+                           'user': global.user, 'use_batch':false, 'model':global.model};
+            $.ajax({
+                url:"/sendRetrievedToken",
+                type:"POST",
+                data:newData,
+                // dataType: 'json',
+                success:function(data){
+                    // setResult(data.Token, data.result);
+                    console.log("result(token): ", data.Token, " candidates:", data.result);
+                },
+                error:function(e){
+                    console.log(data);
+                    console.log("error:" + '\n');
+                    console.log(e);
+                }
+            })
+
+            // record the statistics
+            global.retrievalEffectiveClick += 1;
+            updateAdminStatistics("retrievalEffectiveClick", global.retrievalEffectiveClick)
+        }
+
+        // ask the user to maually provide correct form of the selected words
+        function manualCorrection(tokenRetrievedSpan, currentToken) {
+            var tokenToCorrect = tokenRetrievedSpan.innerText;
+            var tokenCorrected = prompt("Correct form of ", tokenToCorrect, ": ");
+
+            var manualCorrectionMsg = {'Method': 'userManualCorrectionAfterRetrieval', 
+                                        'Token': tokenToCorrect, 
+                                        'TargetToken': tokenCorrected,
+                                        'originDecision': 'trivial',
+                                        'userDecision': 'manualCorrection',
+                                        'batch': false,
+                                        'lang':document.getElementById("lang_tag").innerText,
+                                        'user': global.user,
+                                        'note': 'noFilling',
+                                        'model': global.model};
+            sendCorrection(manualCorrectionMsg);
+
+            // record statistics
+            global.retrievalManualCorrect += 1;
+            updateAdminStatistics("retrievalManualCorrect", global.retrievalManualCorrect);
+            if (tokenToCorrect === "Other") {
+                console.log("user[", global.user, "] set ", currentToken, "->", tokenCorrected);
+            }
+            else{
+                console.log("user[", global.user, "] set ", tokenToCorrect, "->", tokenCorrected);
+            }
+        }
+
+        function buildRetrievalList(tokens) {
+            var token = document.getElementById("currentToken").innerText;
+            if (token != ""){
+                var candidateTokenButton = document.createElement('div');
+                candidateTokenButton.setAttribute('class', 'dropdown-content');
+                candidateTokenButton.setAttribute('value', 'candidates');
+                candidateTokenButton.setAttribute('id', 'retrievedTokenList');
+                // var candidateTokenList = document.createElement('div');
+                // candidateTokenList.setAttribute("class", "dropdown-content");
+                var index = 0;
+                var length = tokens.length;
+                for (index=0; index<length; index++) {
+                    var candidateToken = document.createElement("a");
+                    candidateToken.href = "javascript:void(0)";
+                    candidateToken.onclick = function(){retrieveToken(this)};
+                    candidateToken.innerText = tokens[index];
+                    candidateTokenButton.appendChild(candidateToken);
+                }
+
+                // add other for manual tying in the correct form
+                var candidateToken = document.createElement("a");
+                candidateToken.href = "javascript:void(0)";
+                candidateToken.onclick = function(){manualCorrection(this, token)};
+                candidateToken.innerText = "Other";
+                candidateTokenButton.appendChild(candidateToken);
+                document.getElementById("retrievedTokenButton").appendChild(candidateTokenButton);
+            }
+        }
+
+        // create the retrieved list for misspelled words
+        function createCandidateList() {
+            var tokenToRetrieve = document.getElementById("currentToken").innerText;
+            var needRetrievalMsg = {'Method': 'userCorrection', 
+                                    'Token': tokenToRetrieve, 
+                                    'TargetToken': '[None]',
+                                    'originDecision': 'trivial',
+                                    'userDecision': 'needRetrieval',
+                                    'batch': false,
+                                    'lang':document.getElementById("lang_tag").innerText,
+                                    'user': global.user,
+                                    'note': 'noFilling',
+                                    'model': global.model};
+            sendCorrection(needRetrievalMsg);
+        }
+
+        function updateMetrics() {
+            // 1 for misspelling and 0 for correct spelling
+
+            // label 1 predict 0
+            var FP = parseInt(document.getElementById("numMisspellCorrect").innerText);
+
+            // correctly predict misspelling
+            var FN = parseInt(document.getElementById("numCorrectMisspell").innerText);
+            var TN = parseInt(document.getElementById("numMisspelled").innerText) - FP;
+            var TP = parseInt(document.getElementById("numCorrect").innerText) - FN;
+            var P = 0;
+            var R = 0;
+
+            if (TP + FP == 0){
+                P = TP;
+            }
+            else {
+                P = TP / (TP + FP);
+            }
+
+            if (TP + FN == 0){
+                R = TP;
+            }
+            else {
+                R = TP / (TP + FN);
+            }
+
+            var accuracy = parseFloat( (TP + FN) / parseInt(document.getElementById("num").innerText));
+            var precision = P;
+            var recall = R;
+            var F1 = parseFloat(2 * P * R / (P + R));
+
+            document.getElementById("accuracy").innerText = accuracy.toFixed(2);
+            document.getElementById("precision").innerText = parseFloat(P).toFixed(2);
+            document.getElementById("recall").innerText = parseFloat(R).toFixed(2);
+            document.getElementById("f1").innerText = F1.toFixed(2);   
+
+        }
+
+        function addSpace() {
+            var existingCorpus = document.getElementById("outputFrame");
+            var newTokenSpan = document.createElement("span");
+            newTokenSpan.setAttribute("class", "space-beforeCorrection");
+            var newTokenText = document.createTextNode(" ");
+            newTokenSpan.appendChild(newTokenText);
+            existingCorpus.appendChild(newTokenSpan);
+            global.whiteSpaceNum += 1;
+        }
+
+        function setResult(token, result) {
+            var existingCorpus = document.getElementById("outputFrame");
+            var newTokenSpan = document.createElement('span-token');
+            newTokenSpan.setAttribute("id", "token_" + global.tokenNum);
+            newTokenSpan.setAttribute("class", "token-beforeCorrection");
+            newTokenSpan.onclick = function() {selectToken(this)};
+            document.getElementById('result').innerText = result;
+            if (result == "correct") {
+                document.getElementById("numCorrect").innerHTML = parseInt(document.getElementById("numCorrect").innerHTML) + 1;
+                global.tokenArray[global.tokenNum-1] = token;
+            }
+            else if (result == "misspelled"){
+                document.getElementById("numMisspelled").innerHTML = parseInt(document.getElementById("numMisspelled").innerHTML) + 1;
+                global.tokenArray[global.tokenNum-1] = "<u>" + token + "</u>";
+                newTokenSpan.style.backgroundColor = decision2colorTag[result];
+                global.tokenMisspelledIndex[parseInt(document.getElementById("numMisspelled").innerHTML)] = global.tokenNum;
+            }
+            else if (result == "correct-misspell"){
+                var correctMisspell;
+                document.getElementById("numMisspelled").innerHTML = parseInt(document.getElementById("numMisspelled").innerHTML) + 1;
+                document.getElementById("numCorrectMisspell").innerHTML = parseInt(document.getElementById("numCorrectMisspell").innerHTML) + 1;
+                correctMisspell = parseInt(document.getElementById("numCorrectMisspell").innerHTML);
+                global.tokenArray[global.tokenNum-1] = "<u>" + token + "</u>";
+                newTokenSpan.style.backgroundColor = decision2colorTag[result];
+                global.tokenMisspelledIndex[parseInt(document.getElementById("numMisspelled").innerHTML)] = global.tokenNum;
+            }
+            else{
+                var misspellCorrect;
+                document.getElementById("numMisspellCorrect").innerHTML = parseInt(document.getElementById("numMisspellCorrect").innerHTML) + 1;
+                misspellCorrect = parseInt(document.getElementById("numMisspellCorrect").innerHTML);
+                document.getElementById("numCorrect").innerHTML = parseInt(document.getElementById("numCorrect").innerHTML) + 1;
+                global.tokenArray[global.tokenNum-1] = token;
+                newTokenSpan.style.backgroundColor = decision2colorTag[result];
+            }
+
+            var newTokenText = document.createTextNode(token);
+            newTokenSpan.appendChild(newTokenText);
+            existingCorpus.appendChild(newTokenSpan);
+            setResultSummary();
+            
+            if (result == "correct-misspell") {
+                document.getElementById("numCorrectMisspellRatio").innerHTML = parseFloat(correctMisspell * 100 / parseInt(document.getElementById("num").innerHTML)).toFixed(2);
+            }
+            else if (result == "misspell-correct"){
+                document.getElementById("numMisspellCorrectRatio").innerHTML = parseFloat(misspellCorrect * 100 / parseInt(document.getElementById("num").innerHTML)).toFixed(2);
+            }
+            updateMetrics();
+        }
+
+        function sendNewToken(data) {
+            var numOOV, vocabSize;
+            $.ajax({
+                url:"/sendNewToken",
+                type:"POST",
+                data:data,
+                success:function(data){
+                    if (data.user == global.user) {
+                        setResult(data.Token, data.result);
+                        numOOV = parseInt(document.getElementById("numOOV").innerText) + data.OOV;
+                        document.getElementById("numOOV").innerText = numOOV;
+                        document.getElementById("numVocabulary").innerText = parseInt(document.getElementById("numVocabulary").innerText) + data.OOV;
+                        textSize = parseInt(document.getElementById("num").innerText);
+                        console.log("numOOV: ", numOOV, " textSize: ", textSize);
+                        document.getElementById("numOOVRatio").innerText = parseFloat(numOOV * 100 / textSize).toFixed(2)
+                        console.log("result: ", data.Token, data.result, " OOV: ", data.OOV, 'channel: ', data.channel, 'KB: ', data.KB_result);
+                    }
+                },
+                error:function(e){
+                    console.log(data);
+                    console.log("error:" + '\n');
+                    console.log(e);
+                }
+            })
+        }
+
+        function getSubmitInput(){
+            var content = document.getElementById("data").value;
+            var tokens = content.split(" ")
+            for (var index=0; index < tokens.length && tokens[index] != ""; index ++) {
+                var newToken = tokens[index];
+                newToken = newToken.replace(/\b[.,()&$#!\[\]{}"]+\B|\B[.,()&$#!\[\]{}"]+\b/g, "");
+                var newData = {'Method': 'check', 'Token':newToken, 'lang':document.getElementById("lang_tag").innerText, "user": global.user, 'model':global.model};
+                global.tokenNum += 1;
+                addSpace();
+                sendNewToken(newData);
+                console.log("need to add space before ", newToken);
+            }
+        }
+
+        // add an additional rule of constructing set
+        function addPattern(span) {
+            if (!checkLang()){
+                return false;
+            }
+            var status = span.value;
+            var form = document.getElementById("additionalRules");
+            var base = document.getElementById("extraRules");
+            if (base == null) {
+                base = document.createElement("div");
+                base.setAttribute("id", "extraRules");
+                form.appendChild(base);
+            }
+            if (status == 'add a pattern') {
+                span.value = 'submit';
+                var correctChara = document.createElement("input");
+                var linkMsg = document.createElement("span");
+                var confuseChara = document.createElement("input");
+
+                correctChara.type = "text";
+                correctChara.name = "correctCharac";
+                correctChara.placeholder = "characters to be misspelled";
+                correctChara.setAttribute("id", "correctChara");
+
+                confuseChara.type = "text";
+                confuseChara.name = "confuseChara";
+                confuseChara.placeholder = "misspelling characters";
+                confuseChara.setAttribute("id", "confuseChara");
+
+                linkMsg.innerText = " is misspelled to be ";
+                linkMsg.setAttribute("id", "linkMsg");
+
+                base.appendChild(correctChara);
+                base.appendChild(linkMsg);
+                base.appendChild(confuseChara);
+
+                document.getElementById("addRulesDescription").innerText = "For example, fill in l and ll for the two blanks if l could be easily misspelled as ll.";
+            }
+            else if (status == 'submit') {
+                var correctCharacter = document.getElementById("correctChara").value;
+                var confuseCharacter = document.getElementById("confuseChara").value;
+                if (correctCharacter.length && confuseCharacter.length){
+                    span.value = 'add a pattern';
+                    base.parentNode.removeChild(base);
+                    document.getElementById("addRulesDescription").innerText = "";
+                    console.log("change",  correctCharacter, " to ", confuseCharacter);
+
+                    // send new pattern to server side
+                    var newPattern = {'Method': 'newPattern', 
+                           'correctCharacter': correctCharacter,
+                           'confuseCharacter': confuseCharacter,
+                           'lang':document.getElementById("lang_tag").innerText,
+                           'user': global.user};
+
+                    $.ajax({
+                        url:"/sendNewPattern",
+                        type:"POST",
+                        data:newPattern,
+                        // dataType: 'json',
+                        success:function(data){
+                            // setResult(data.Token, data.result);
+                            console.log(" pattern:", data.pattern);
+                            console.log(" currect patterns: ", data.currectPattern);
+                        },
+                        error:function(e){
+                            console.log(data);
+                            console.log("error:" + '\n');
+                            console.log(e);
+                        }
+                    })
+
+                }
+            }
+        }
+
+        function process(text){
+            var lang = document.getElementById("lang_tag");
+
+            // No need to specify langauge mode
+            if (!checkLang()) {
+                return false;
+            }
+
+            var last_char = text.charAt(text.length - 1);
+            if (!global.splitter.includes(last_char.valueOf()) && last_char != "\n"){
+                getLastToken(last_char);
+                window.endOfToken = false;
+                window.inToken = true;
+            }
+            else if (last_char == "\n") {
+                // add a white space
+                addSpace();
+            }
+            else {
+                addSpace();
+
+            	window.endOfToken = true;
+                if (window.inToken){
+                    global.tokenNum += 1;
+                    window.inToken =  false;
+                    // remove ending punctuation
+                    var newToken = global.latestToken.replace(/\b[-.,()&$#!\[\]{}"']+\B|\B[-.,()&$#!\[\]{}"']+\b/g, "");
+                    var newData = {'Method': 'check', 'Token':newToken, 'lang':document.getElementById("lang_tag").innerText, "user": global.user, 'model':global.model};
+                    sendNewToken(newData);
+                    document.getElementById("lastToken").innerHTML = global.latestToken;
+                	global.latestToken = "";
+                }
+            }
+        }
+
+        function sendCorrection(correctionMsg) {
+            document.getElementById("model-status-identifier").style.backgroundColor = global.modelStatus2color["in-use"];
+            console.log("model in use");
+            // send correction msg to server
+            $.ajax({
+                url:"/sendTokenCorrection",
+                type:"POST",
+                data:correctionMsg,
+                success:function(correctionMsg){
+                    if (correctionMsg.user == global.user) {
+                        console.log("result: ", correctionMsg.Token, correctionMsg.result);
+                        if (correctionMsg.result.length >= 0) {
+                            buildRetrievalList(correctionMsg.result.slice(0, global.max_retrieval_num));
+                            global.retrievalClick += 1;
+                            updateAdminStatistics("retrievalClick", global.retrievalClick);
+                            console.log("retrieve list built in length: ", correctionMsg.result.length);
+                        }
+                        if (typeof correctionMsg.OOV === "boolean") {
+                            console.log("single-token(isOOV): ", correctionMsg.OOV, typeof correctionMsg.OOV);
+                            var numOOV = correctionMsg.OOV ? 1:0;
+                        }
+                        else {
+                            console.log("multi-token(isOOV): ", correctionMsg.OOV, typeof correctionMsg.OOV);
+                            var numOOV = correctionMsg.OOV.filter(Boolean).length;
+                        }
+                        addition("numOOV", -numOOV);
+                        addition("numVocabulary", numOOV);
+                        textSize = parseInt(document.getElementById("num").innerText);
+                        console.log("numOOV: ", numOOV, " textSize: ", textSize);
+
+                        console.log("correction deliver succeed reduce OOV of ", numOOV);
+
+                        // Note OOV Ratio is based on numOOV presented, not reduced
+                        document.getElementById("numOOVRatio").innerText = parseFloat(parseInt(document.getElementById("numOOV").innerText) * 100 / textSize).toFixed(2)
+                    }
+                },
+                error:function(e){
+                    console.log(correctionMsg);
+                    console.log("error:" + '\n');
+                    console.log(e);
+                }
+            })
+
+            document.getElementById("model-status-identifier").style.backgroundColor = global.modelStatus2color["ready"];
+            console.log("model ready");
+        }
+
+        function toCorrectSpell(){
+            // only correct when the model made an mistake
+            var tokenSelected = document.getElementById("token_" + currentTokenIndex);
+            var originDecision = global.colorTag2decision[rgbNotatToHex(tokenSelected.style.backgroundColor)];
+
+            // correct statistics
+            if (originDecision != "correct") {
+                // non-correct tag will be undefined
+                tokenSelected.style.backgroundColor = global.decision2colorTag["correct"];
+                addition("numCorrect", 1);
+                addition("numMisspelled", -1);
+                setResultSummary();
+
+                if (originDecision == "misspelled" || originDecision == "correct-misspell") {
+                    global.misspell2correct += 1;
+                    updateAdminStatistics("misspell2correct", global.misspell2correct);
+                } 
+            }
+
+            // send notification to the server
+            var newCorrection = {'Method': 'userCorrection', 
+                                 'Token': global.currentToken,
+                                 'TargetToken': global.currentToken, 
+                                 'originDecision': originDecision,
+                                 'userDecision': 'correct',
+                                 'batch': false,
+                                 'lang':document.getElementById("lang_tag").innerText,
+                                 'user': global.user,
+                                 'model': global.model};
+            sendCorrection(newCorrection);
+        }
+
+        function toMisspell(){
+            var originDecision = global.currentTokenDecision;
+
+            // correct the model if goes wrong
+            if (global.currentTokenDecision == "correct") {
+                global.currentTokenDecision = "misspelled";
+                document.getElementById("token_" + currentTokenIndex).style.backgroundColor = global.decision2colorTag["misspelled"];
+
+                // correct statistics
+                addition("numCorrect", -1);
+                addition("numMisspelled", 1);
+                setResultSummary();
+            }
+
+            if (global.currentTokenDecision == "correct" || global.currentTokenDecision == "misspell-correct") {
+                global.correct2misspell += 1;
+                updateAdminStatistics("correct2misspel", global.correct2misspell);
+            }
+
+            // send notification to the server
+            var newCorrection = {'Method': 'userCorrection', 
+                                 'Token': global.currentToken, 
+                                 'TargetToken': '[None]',
+                                 'originDecision': originDecision,
+                                 'userDecision': 'misspelled',
+                                 'batch': false,
+                                 'lang':document.getElementById("lang_tag").innerText,
+                                 'user': global.user,
+                                 'model': global.model};
+            sendCorrection(newCorrection);
+        }
+
+        // one-click correction
+        function oneClickCorrection(category) {
+            var thisToken;
+            var currentTokenClass;
+            var tokenSpan;
+            var OriginDecision;
+            var tokenNum = parseInt(document.getElementById("num").innerText);
+            var selectedTokens = new Array();
+            var tokenIndex = 0;
+            document.getElementById("model-status-identifier").style.backgroundColor = global.modelStatus2color["in-use"];
+            console.log("model in use");
+            if (category == "misspelled") {
+                originDecision = category;
+                // TODO: batching for faster training
+                for (var index=0; index<tokenNum; index++) {
+                    tokenSpan = document.getElementById("token_" + index);
+                    currentDecision = global.colorTag2decision[rgbNotatToHex(tokenSpan.style.backgroundColor)];
+                    if (originDecision == currentDecision) {
+                        thisToken = tokenSpan.innerText;
+                        document.getElementById("token_" + index).style.backgroundColor = global.decision2colorTag["correct"];
+
+                        // for batching
+                        selectedTokens[tokenIndex] = thisToken;
+                        tokenIndex += 1;
+                    }
+                }
+            }
+
+            else if (category == "correct-misspell") {
+                originDecision = category;
+                for (var index=0; index<tokenNum; index++) {
+                    tokenSpan = document.getElementById("token_" + index);
+                    try{
+                        currentDecision = global.colorTag2decision[rgbNotatToHex(tokenSpan.style.backgroundColor)];
+                    }catch (tyerr) {
+                        console.log(tyerr);
+                        console.log(tokenSpan.innerHTML);
+                        console.log(tokenSpan.style.backgroundColor);
+                    }
+
+                    if (currentDecision == originDecision) {
+                        thisToken = tokenSpan.innerText;
+                        document.getElementById("token_" + index).style.backgroundColor = global.decision2colorTag["correct"];
+
+                        // for batching
+                        selectedTokens[tokenIndex] = thisToken;
+                        tokenIndex += 1;
+                    }
+                }
+            }
+
+            else if (category == "correct") {
+                originDecision = category;
+                for (var index=0; index<tokenNum; index++) {
+                    tokenSpan = document.getElementById("token_" + index);
+                    currentDecision = global.colorTag2decision[rgbNotatToHex(tokenSpan.style.backgroundColor)];
+                    if (currentDecision == originDecision) {
+                        thisToken = tokenSpan.innerText;
+
+                        // for batching
+                        selectedTokens[tokenIndex] = thisToken;
+                        tokenIndex += 1;
+                    }
+                }
+            }
+
+            else if (category == "misspell-correct") {
+                originDecision = category;
+                for (var index=0; index<tokenNum; index++) {
+                    tokenSpan = document.getElementById("token_" + index);
+                    currentDecision = global.colorTag2decision[rgbNotatToHex(tokenSpan.style.backgroundColor)];
+                    if (currentDecision == originDecision) {
+                        thisToken = tokenSpan.innerText;
+
+                        // for batching
+                        selectedTokens[tokenIndex] = thisToken;
+                        tokenIndex += 1;
+                    }
+                }
+            }
+
+            else if (category == "all") {
+                oneClickCorrection("correct");
+                oneClickCorrection("misspelled");
+                oneClickCorrection("correct-misspell");
+                oneClickCorrection("misspell-correct");
+            }
+
+            if (category!="all" && selectedTokens.length > 0) {
+                var newCorrection = {'Method': 'userCorrection', 
+                                    'Token': JSON.stringify(selectedTokens), 
+                                    'TargetToken': JSON.stringify(selectedTokens),
+                                    'originDecision': originDecision,
+                                    'userDecision': category,
+                                    'batch': true,
+                                    'lang':document.getElementById("lang_tag").innerText,
+                                    'user': global.user,
+                                    'model': global.model};
+                sendCorrection(newCorrection);
+                if (category != "correct") {
+                    addition("numCorrect", tokenIndex);
+                    addition("numMisspelled", -tokenIndex);
+                    setResultSummary();
+                }
+                document.getElementById("model-status-identifier").style.backgroundColor = global.modelStatus2color["ready"];
+                console.log("model ready");
+            }
+        }
+
+        function show_lang(text, key) {
+            var current_lang = text;
+            document.getElementById("lang_tag").innerHTML = current_lang;
+            var lang = {'lang': current_lang, 'model':global.model};
+
+            // remove previous vocabulary
+            resetStatistics(true);
+
+            $.ajax({
+                url: '/loadLangModel',
+                data: lang,
+                success: function(data) {
+                    document.getElementById("numVocabulary").innerText = data.KBSize;
+                    console.log("KB size: ", data.KBSize);
+                    console.log("use Model: ", lang.model);
+                    console.log(data.msg);
+                },
+                error: function(e) {
+                    console.log(e);
+                    console.log(lang);
+                }
+            });
+        }
+
+        function show_lang_input(){
+            var current_lang = document.getElementById("lang_input").value;
+            document.getElementById("lang_tag").innerHTML = current_lang;
+        }
+
+        // load model of unseen language
+        function loadModel_new(){
+            var lang = prompt("Language：");
+            alert("Input Language: " + lang);
+            show_lang(lang);
+        }
+
+        // show administrative statistics
+        function adminStatistics(adminButton){
+            var showAdminStats = adminButton.value;
+            var adminStatFrame = document.getElementById("adminStatistics");
+            var adminStatMapping = {"misspell2correct": global.misspell2correct, 
+                                    "correct2misspell": global.correct2misspell,
+                                    "retrievalEffectiveClick": global.retrievalEffectiveClick,
+                                    "retrievalManualClick": global.retrievalManualCorrect,
+                                    "retrievalClick": global.retrievalClick};
+            if (showAdminStats == "admin") {
+                for(var statName in adminStatMapping){
+                    var candidateStats = document.createElement('p');
+                    candidateStats.setAttribute('id', statName);
+                    candidateStats.innerText = statName + ": " + adminStatMapping[statName].toString();
+                    adminStatFrame.appendChild(candidateStats);
+                }
+                document.getElementById("showAdminStatsButton").value = "hide";
+            }
+            else {
+                // send in the metrics to server
+                var metricsStatistics = {'Method': 'metrics', 
+                                        "misspell2correct": global.misspell2correct.toString(), 
+                                        "correct2misspell": global.correct2misspell.toString(),
+                                        "retrievalEffectiveClick": global.retrievalEffectiveClick.toString(),
+                                        "retrievalManualClick": global.retrievalManualCorrect.toString(),
+                                        "retrievalClick": global.retrievalClick.toString(),
+                                        'lang':document.getElementById("lang_tag").innerText.toString(),
+                                        'user': global.user};
+
+                $.ajax({
+                    url:"/collectMetric",
+                    type:"POST",
+                    data:metricsStatistics,
+                    success:function(data){
+                        console.log(" metrics updated");
+                        for (var metric in metricsStatistics) {
+                            console.log(metric, metricsStatistics[metric]);
+                        }
+                    },
+                    error:function(e){
+                        console.log(data);
+                        console.log("error:" + '\n');
+                        console.log(e);
+                    }
+                })
+                adminStatFrame.innerHTML = "";
+                document.getElementById("showAdminStatsButton").value = "admin";
+            }
+
+        }
+
+        // update adminstrative statistics
+        function updateAdminStatistics(name, value) {
+            // can only update the figures when it is shown
+            if (document.getElementById("showAdminStatsButton").value == "hide"){
+                try {
+                    var statFrame = document.getElementById(name);
+                    statFrame.innerText = name + ": " + value.toString();
+                } catch(err){
+                    console.log("err: ", err, " name: ", name);
+                }
+            }
+        }
+
+        // Upload File
+        function uploadFile(){
+            var fileReader = new FileReader();
+            console.log(document.getElementById("fileUploader").value);
+            var form = document.forms["fileForm"];
+
+            // console.log(document.getElementById("fileUploader").innerText);
+            if (checkLang() && form["files"].files.length > 0) {
+                var file = form["files"].files[0];
+                var documentData = new FormData(form);
+                documentData.append("files", file, file.name);
+                documentData.append("user", global.user);
+                documentData.append("lang", getCurrentLang);
+                documentData.append("Method", 'fileUpload');
+                documentData.append("size", file.size);
+                documentData.append("maxLength", global.maxTokenDeliverLength);
+                documentData.append("start", global.start);
+                documentData.append("type", 'textFile');
+                documentData.append("model", global.model);
+
+                // file.type
+                console.log("file: ", file.name);
+                console.log('size: ', form["files"].files[0].size);
+                $.ajax({
+                    type:"POST",
+                    url: '/uploadDocument',
+                    data: documentData,
+                    contentType: false, // NEEDED, DON'T OMIT THIS (requires jQuery 1.6+)
+                    processData: false, // NEEDED, DON'T OMIT THIS
+                    success: function(data) {
+                        if (data.user == global.user) {
+                            for (var index = 0; index < data.result.length; index++){
+                                setResult(data.Token[index], data.result[index]);
+                                addSpace();
+                            }
+                            global.start += data.textLength;
+
+                            if (typeof data.isOOV === "boolean") {
+                                console.log("single-token(isOOV): ", data.isOOV, typeof data.isOOV);
+                                var numOOV = data.isOOV ? 1:0;
+                                }
+                            else {
+                                console.log("multi-token(isOOV): ", data.isOOV, typeof data.isOOV);
+                                var numOOV = data.isOOV.filter(Boolean).length;
+                            }
+                            addition("numOOV", numOOV)
+                            console.log("add OOV by ", numOOV);
+                            textSize = parseInt(document.getElementById("num").innerText);
+                            console.log("numOOV: ", numOOV, " textSize: ", textSize);
+                            document.getElementById("numOOVRatio").innerText = parseFloat(numOOV * 100 / textSize).toFixed(2)
+
+                            var counter = data.channel["both"] + data.channel["KB"] + data.channel["model"]; 
+                            console.log("both: ", data.channel["both"] / counter, "KB: ", data.channel["KB"] / counter, "model: ", data.channel["model"] / counter)
+                        }
+                    },
+                    error: function(e) {
+                        alert(e);
+                    }
+                });
+            }
+        }
+
+        // Upload Binary File (w1, 1/0, w2)
+        function uploadBinFile(){
+            var fileReader = new FileReader();
+            console.log(document.getElementById("fileUploader").value);
+            var form = document.forms["fileForm"];
+
+            // console.log(document.getElementById("fileUploader").innerText);
+            if (checkLang() && form["files"].files.length > 0) {
+                var file = form["files"].files[0];
+                var documentData = new FormData(form);
+                documentData.append("files", file, file.name);
+                documentData.append("user", global.user);
+                documentData.append("lang", getCurrentLang);
+                documentData.append("Method", 'fileUpload');
+                documentData.append("size", file.size);
+                documentData.append("maxLength", global.maxTokenDeliverLength);
+                documentData.append("start", global.start);
+                documentData.append("type", 'labelFile');
+                documentData.append("model", global.model);
+                
+                // file.type
+                console.log("file: ", file.name);
+                console.log('size: ', form["files"].files[0].size);
+                $.ajax({
+                    type:"POST",
+                    url: '/uploadDocument',
+                    data: documentData,
+                    contentType: false, // NEEDED, DON'T OMIT THIS (requires jQuery 1.6+)
+                    processData: false, // NEEDED, DON'T OMIT THIS
+                    success: function(data) {
+                        if (data.user == global.user) {
+                            for (var index = 0; index < data.result.length; index++){
+                                setResult(data.Token[index], data.result[index]);
+                                global.tokenNum += 1;
+                                addSpace();
+                            }
+                            global.start += data.textLength;
+
+
+                            if (typeof data.isOOV === "boolean") {
+                                console.log("single-token(isOOV): ", data.isOOV, typeof data.isOOV);
+                                var numOOV = data.isOOV ? 1:0;
+                                }
+                            else {
+                                console.log("multi-token(isOOV): ", data.isOOV, typeof data.isOOV);
+                                var numOOV = data.isOOV.filter(Boolean).length;
+                            }
+                            addition("numOOV", numOOV);
+                            addition("numVocabulary", data.vocabIncrement);
+                            textSize = parseInt(document.getElementById("num").innerText);
+                            console.log("numOOV: ", numOOV, " textSize: ", textSize);
+                            document.getElementById("numOOVRatio").innerText = parseFloat(numOOV * 100 / textSize).toFixed(2)
+
+                            var counter = data.channel["both"] + data.channel["KB"] + data.channel["model"]; 
+                            console.log("both: ", data.channel["both"] / counter, "KB: ", data.channel["KB"] / counter, "model: ", data.channel["model"] / counter)
+                        }
+                    },
+                    error: function(e) {
+                        alert(e);
+                    }
+                });
+            }
+        }
+    </script>
+  </head>
+
+ 
+<body>
+    <h2 align="center">Online Spelling Correction</h2>
+
+    <p>Have you seen the movie <I>Titanic</I> (directed by James Cameron in 1997)? If so, please describe its main plot in about three paragraphs (~ 500 words)
+    in the following area or upload as a text file. Otherwise describe one of your favorite movie in similar length. (Scratch the corner in the right bottom of 
+    the text box to change its size, use cleat input button to erase the initial indent)</p></br> 
+
+    <p>NOTE: each token ends in a white space, make sure tying a space whenever a word finishs (<I>especially adding a space before starting a new line</I>).</p>
+    <p>If you want to clear the input and output area, as well as all the statistics, but keep the language choice, use the <I>reset</I> button instead of refreshing the page.</p></br>
+
+    <p>Lang Selected: <span id="lang_tag"></span></p>
+
+    <div align="center" class="dropdown">
+    <button class="dropbtn">Select Lang</button>
+        <div class="dropdown-content">
+            <a href="javascript:void(0)" onclick="show_lang('English')">English</a>
+            <a href="javascript:void(0)" onclick="show_lang('Italian')">Italian</a>
+            <a href="javascript:void(0)" onclick="show_lang('Spanish')">Spanish</a>
+            <a href="javascript:void(0)" onclick="show_lang('Russian')">Russian</a>
+            <a href="javascript:void(0)" onclick="loadModel_new()">Other</a>
+        </div>
+    </div><br/>
+
+    <div align="center">
+        <textarea id="data" rows="10" cols="60" onkeyup="process(this.value);">
+        </textarea>
+    </div> 
+    <div class="dropdown" id="outputFrame">
+        <span id="current_context">
+        </span>
+    </div>
+    </p>
+    Selected Token: <span id="currentToken" aria-placeholder="    "></span>
+    <span>   </span>
+    <input type="button" value="correct spelled" onclick="toCorrectSpell()" />
+    <input type="button" value="misspelled" onclick="toMisspell()" />
+    <div align="center" id="retrievedTokenButton" class="dropdown">
+        <button id="selectRetrievedTokens" class="dropbtn" value="candidates" onclick="createCandidateList()">candidates<br/>
+    </div>
+
+    <div align="center" id="oneClickCorrection" class="dropdown">
+        <button class="dropbtn">One-click Correction for all</button>
+        <div class="dropdown-content">
+            <a href="javascript:void(0)" onclick="oneClickCorrection('all')">all tokens</a>
+            <a href="javascript:void(0)" onclick="oneClickCorrection('misspelled')">misspelled tokens</a>
+            <a href="javascript:void(0)" onclick="oneClickCorrection('correct')">correct tokens</a>
+            <a href="javascript:void(0)" onclick="oneClickCorrection('correct-misspell')">correct-misspelled tokens</a>
+            <a href="javascript:void(0)" onclick="oneClickCorrection('misspell-correct')">misspelled-correct tokens</a>
+        </div>
+    </div><br/>
+
+    <p></p>
+    User: <span id="user"></span></br>
+    <p></p>
+    <p>Statistics: </p>
+    <p>Vocabulary: <span id="numVocabulary">0</span>  OOV: <span id="numOOV">0</span>  Ratio: <span id="numOOVRatio">0</span>%</p>
+    <p>Correct: <span id="numCorrect">0</span> Ratio: <span id="numCorrectRatio">0</span>%</p>
+    <p><span id="misspell-title" style="background-color:#28B3BE;">Misspelled</span>: <span id="numMisspelled">0</span> Ratio: <span id="numMisspelledRatio">0</span>%</p>
+    <p><span id="correct-misspell-title" style="background-color:#FEB236">Label Correct - Predict Misspell (included in Misspelled)</span>: <span id="numCorrectMisspell">0</span> Ratio: <span id="numCorrectMisspellRatio">0</span>%</p>
+    <p><span id="misspell-correct-title" style="background-color:#B5E7A0">Label Misspell - Predict Correct (included in Correct)</span>: <span id="numMisspellCorrect">0</span> Ratio: <span id="numMisspellCorrectRatio">0</span>%</p>
+    <p>Accuracy: <span id='accuracy'>0</span>  Precision: <span id='precision'>0</span> Recall: <span id='recall'>0</span>  F1: <span id='f1'>0</span></p>
+    <p>
+        Token Count: <span id="num">0</span>
+    </p>
+    <div id="adminStatistics">
+        <!-- <p id=""></p> -->
+    </div>
+    <div id="summary">
+        Lastest Token: <span id="lastToken"></span><br/>
+        Result: <span id="result"></span><br/>
+    </div>
+	<div style="margin-top:50px" align="center">
+		<input type="button" id="descriptionButton" value="instructions" onclick="showDescription()" />
+        <input type="button" value="upload" onclick="uploadFile()" />
+        <input type="button" value="clear input" onclick="clearInput()" />
+        <input type="button" value="clear output" onclick="clearOutput()" />
+        <input type="button" value="reset" onclick="clearAll()" />
+        <input type="button" id="addRuleButton" value="add a pattern" onclick="addPattern(this)" />
+        <input type="button" id="contactButton" value="contact" onclick="showContact()" />
+        <input type="button" id="showAdminStatsButton" value="admin" onclick="adminStatistics(this)" />
+    </div><br>
+    <form id="additionalRules" method="post" enctype="multipart/form-data" onsubmit="return false;">
+        <div id="extraRules">
+        </div><br>
+        <p id="addRulesDescription"></p>
+    </form><br>
+    <div id="description">
+        <p id="purpose"></p>
+    </div>
+    <form id="fileForm" method="post" enctype="multipart/form-data" onsubmit="return false;">
+        <div id='uploadFiles'>
+            <input id="fileUploader"  type="file" name="files" multiple />
+        </div><br>
+        <input type="submit" value="Upload File" name="submit" onclick="uploadFile()" />
+        <input type="submit" value="Customized model training" name="submitBin" onclick="uploadBinFile()" />
+    </form>
+    <p>Support format: .txt</p>
+    <p>To train your own model (for tuning in labelled data): each line consists of a token, label, the correct form, the position where they first becomes differ (0 if two words are identical) and error type, separated by space (0 for correct spelling and 1 for misspelling). e.g. <I>"lable 1 label 4 normal"</I></p>
+    <div class="input-color">
+        <div class="color-box" id="model-status-identifier" style="background-color: #D9FF66;"></div>
+        <!-- Replace "navy" to change the color -->
+    </div>
+
+</body>
+</html>

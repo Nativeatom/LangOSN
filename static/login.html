@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="//ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js">
+</script>
+<style>
+body {font-family: Arial, Helvetica, sans-serif;}
+* {box-sizing: border-box;}
+
+/* Button used to open the contact form - fixed at the bottom of the page */
+.open-button {
+  background-color: #555;
+  color: white;
+  padding: 16px 20px;
+  border: none;
+  cursor: pointer;
+  opacity: 0.8;
+  position: fixed;
+  bottom: 23px;
+  right: 28px;
+  width: 280px;
+}
+
+/* The popup form - hidden by default */
+.form-popup {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  right: 15px;
+  border: 3px solid #f1f1f1;
+  z-index: 9;
+}
+
+/* Add styles to the form container */
+.form-container {
+  max-width: 300px;
+  padding: 10px;
+  background-color: white;
+}
+
+/* Full-width input fields */
+.form-container input[type=text], .form-container input[type=password] {
+  width: 100%;
+  padding: 15px;
+  margin: 5px 0 22px 0;
+  border: none;
+  background: #f1f1f1;
+}
+
+/* When the inputs get focus, do something */
+.form-container input[type=text]:focus, .form-container input[type=password]:focus {
+  background-color: #ddd;
+  outline: none;
+}
+
+/* Set a style for the submit/login button */
+.form-container .btn {
+  background-color: #4CAF50;
+  color: white;
+  padding: 16px 20px;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  margin-bottom:10px;
+  opacity: 0.8;
+}
+
+/* Add a red background color to the cancel button */
+.form-container .cancel {
+  background-color: brown;
+}
+
+/* Add some hover effects to buttons */
+.form-container .btn:hover, .open-button:hover {
+  opacity: 1;
+}
+</style>
+
+<script>
+        var read = true;
+        function openForm() {
+          read = true;
+          // alert(read);
+          if (!read) {
+              read = true;
+              // document.getElementById("startButton").value = "read";
+            document.getElementById("startButton").innerText = "Get Started";
+            // alert(document.getElementById("startButton").value);
+          }
+          //elif (read) {
+          document.getElementById("myForm").style.display = "block";
+          //}
+        }
+        
+        function closeForm() {
+          document.getElementById("myForm").style.display = "none";
+        }
+        
+        function validateEmail(email) {
+            var re = /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
+            return re.test(String(email).toLowerCase());
+        }
+        
+        function registerUser() {
+            var username = document.getElementById("username").value;
+            var email = document.getElementById("email").value;
+            var psw = document.getElementById("psw").value;
+            document.getElementById("loginSection").innerText = "Register";
+            console.log(email);
+            console.log(" valid: ", validateEmail(email))
+            if (!email.length) {
+                console.log(typeof email);
+                console.log(email.length);
+                alert("Please enter an email address");
+            }
+            else if (!validateEmail(email)){
+                alert("Please use a valid email address");
+            }
+            else if (username.length && email.length && psw.length) {
+                var newData = {'Method': 'register', 'user':username, 'email':email, 'password': psw};
+        
+                $.ajax({
+                            url:"/loginValidation",
+                            type:"POST",
+                            data:newData,
+                            // dataType: 'json',
+                            success:function(data){
+                                console.log("result: ", data.status);
+                                if (data.status == "dupUserName") {
+                                    alert("The username is already used");
+                                }
+                                else if (data.status == "registrationSucceed") {
+                                    document.getElementById("register").value = "registered";
+                                    document.getElementById("register").innerText = "User Registered";
+                                    document.getElementById("loginSection").innerText = "Login";
+                                }
+                            },
+                            error:function(e){
+                                console.log(newData);
+                                console.log("error:" + '\n');
+                                console.log(e);
+                            }
+                        })
+            }
+        }
+        
+        function Login(){
+            var username = document.getElementById("username").value;
+            console.log(username);
+            var email = document.getElementById("email").value;
+            var psw = document.getElementById("psw").value;
+            var newData = {'Method': 'login', 'user':username, 'email':email, 'password': psw};
+        
+            $.ajax({
+                        url:"/loginValidation",
+                        type:"POST",
+                        data:newData,
+                        // dataType: 'json',
+                        success:function(data){
+                            console.log("result: ", data.status)
+                            if (data.status == "succeed") {
+                                var url = "/static/interact.html" + "?user=" + username;
+                                window.location = url;
+                            }
+                        },
+                        error:function(e){
+                            console.log(newData);
+                            console.log("error:" + '\n');
+                            console.log(e);
+                        }
+                    })
+
+            
+        }
+        
+        function validateLogin() {
+            var username = document.getElementById("username").value;
+            var email = document.getElementById("email").value;
+            var psw = document.getElementById("psw").value;
+            var newData = {'Method': 'login', 'user':username, 'email':email, 'password': psw};
+        
+            $.ajax({
+                        url:"/loginValidation",
+                        type:"POST",
+                        data:newData,
+                        // dataType: 'json',
+                        success:function(data){
+                            console.log("result: ", data.status)
+                        },
+                        error:function(e){
+                            console.log(newData);
+                            console.log("error:" + '\n');
+                            console.log(e);
+                        }
+                    })
+        }
+        </script>
+
+</head>
+<body>
+
+<h2>Welcome to the Online Spelling Correction System!</h2></br>
+<h2 align="center">Instructions</h2>
+<p>This is a online spelling normalization for any language</p>
+<p>The instruction goes in following steps</p> 
+<p>    1. Select a langauge from the top botton (or type a new language by selecting Others, switch the language whenever necessary)</p>
+<p>    2. Type in textarea in the language you choose. The misspelled word will be in background in the demo area right below.</p>
+<p>    3. Correct a word by click the corresponding word in the demo area at step 2, then make a suggestion by clicking the misspelled and correct spelled button</p>
+<p>    4. For misspelled words that not identified by the system, use the drop down menu of candidates to select a word retrieved from vocabulary/hypothesized by the system</p></br>
+<p>There will be several buttons on the bottom</p>
+<p>Click clear Input to clear the text box and reset to clear both the demo area and the text box</p>
+<p>Click upload to upload a text file to the system</p>
+<p>Click hide to hide the instruction, click again to read the instruction again.</p>
+<p>Click instruction to read the instructions again.</p></br>
+<p></p>
+<p>Chrome is recommended to use the system (see below for details). For first-time users, please click the register button and when the title returns to Login, use the login button to login the system.</p>
+<p>Have Fun!</p></br>
+
+<p>Browser compatibility (for PC and mobile users): </p>
+<img src="figure/BrowserCompatibility.jpg"  height=50% width=50% alt="browser compatibility" />
+
+<button id="startButton" class="open-button" onclick="openForm()">I have read the instructions</button>
+<div class="form-popup" id="myForm" onSubmit="return false;" action="interact.html" method="post">
+  <form class="form-container">
+    <h1 id="loginSection" align="center">Login</h1>
+
+    <label id="username_tag" for="username"><b>Username</b></label>
+    <input id="username" type="text" placeholder="Username" name="username" required>
+
+    <label id="email_tag" for="email"><b>Email</b></label>
+    <input id="email" type="text" placeholder="Enter Email" name="email" required>
+
+    <label id="psw_tag" for="psw"><b>Password</b></label>
+    <input id="psw" type="password" placeholder="Enter Password" name="psw" required>
+
+    <button  id="login" type="submit" class="btn" onclick="Login()">Login</button>
+    <button  id="register" class="btn" onclick="registerUser()" value="unregistered">Register</button>
+    <button type="button" class="btn cancel" onclick="closeForm()">Close</button>
+  </form>
+</div>
+
+</body>
+</html>
