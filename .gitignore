@@ -8,4 +8,4 @@ NN_file/
 report/
 UserInfoBase/emailinfo.pkl
 UserInfoBase/userinfo.pkl
-
+__pycache__/
