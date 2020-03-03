@@ -1,9 +1,11 @@
 # directories
 files/
-KnowledgeBase/
+KnowledgeBase/KnowledgeBase
+KnowledgeBase/Vocabulary
 log/
 model/
 NN_file/
 report/
-UserInfoBase/
+UserInfoBase/emailinfo.pkl
+UserInfoBase/userinfo.pkl
 
